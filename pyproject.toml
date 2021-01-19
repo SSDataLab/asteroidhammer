@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "asteroidhammer"
+version = "0.1.0"
+description = "Remove stars and systematics from tess images, leaving only asteroids"
+authors = ["Christina Hedges <christina.l.hedges@nasa.gov>"]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+lightkurve = ">=2.0b4"
+pyia = "^1.2"
+
+[tool.poetry.dev-dependencies]
+jupyterlab = "^3.0.5"
+pytest = "^6.2.1"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

@@ -28,7 +28,6 @@ def _std_iter(x, mask, sigma=3, n_iters=3):
 
 
 class Data(object):
-
     def __init__(self, time, data, error, spline_days=0.5, psf_components=5, bkg_components=5):
         self.time = time
         self.data = data
