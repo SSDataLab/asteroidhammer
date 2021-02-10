@@ -18,11 +18,11 @@ def two_panel_movie(data_a, data_b, out='out.mp4', scale='linear',
     fig, axs = plt.subplots(1, 2, figsize=(8, 4.5))
     for ax in axs:
         ax.set_facecolor('#ecf0f1')
-    im1 = axs[0].imshow(data_A[0], origin='bottom', **kwargs)
+    im1 = axs[0].imshow(data_A[0], origin='lower', **kwargs)
     axs[0].set_xticks([])
     axs[0].set_yticks([])
     axs[0].set_title(title_a, fontsize=10)
-    im2 = axs[1].imshow(data_B[0], origin='bottom', ** kwargs)
+    im2 = axs[1].imshow(data_B[0], origin='lower', ** kwargs)
     axs[1].set_xticks([])
     axs[1].set_yticks([])
     axs[1].set_title(title_b, fontsize=10)
@@ -59,7 +59,7 @@ def movie(data, asteroids={}, out='out.mp4', scale='linear',
 
     fig, ax = plt.subplots(1, 1, figsize=(4.5, 4.5))
     ax.set_facecolor('#ecf0f1')
-    im = ax.imshow(data[0], origin='bottom', **kwargs)
+    im = ax.imshow(data[0], origin='lower', **kwargs)
     xlims, ylims = ax.get_xlim(), ax.get_ylim()
     if len(asteroids) != 0:
         scat = ax.scatter(c[0], r[0], facecolor='None', s=100, edgecolor='r')

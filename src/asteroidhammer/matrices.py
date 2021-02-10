@@ -16,7 +16,7 @@ from fbpca import pca
 
 
 def _bin_down(dtime, dat, tpftime, dt=None, stddev=False):
-    """Bins down high time resolution files to the resolution of a TPF. """
+    """Bins down high time resolutiqon files to the resolution of a TPF. """
     dtime, dat, tpftime = np.asarray(dtime, float), np.asarray(dat, float), np.asarray(tpftime, float)
     if dt is None:
         dt = 0.02083333 + np.zeros(len(tpftime) - 1)
@@ -56,7 +56,7 @@ def _download_quat(sector):
     return path
 
 
-def quat_matrixs(tpf=None, camera=None, sector=None, time=None, dt=None):
+def quat_matrix(tpf=None, camera=None, sector=None, time=None, dt=None):
     """Get an array of the quaternions, at the time resolution of the input TPF"""
     if (tpf is None) and (camera is None) and (sector is None):
         raise ValueError('set either TPF or camera/sector')
@@ -122,14 +122,13 @@ def poly_matrix(time, npoly=3):
     return poly
 
 
-@lru_cache()
-def spline_matrix(tpf, degree=3, n_knots=10):
+def spline_matrix(time, degree=3, n_knots=10):
     """Returns a spline design matrix"""
-    knots = np.linspace(tpf.time[0], tpf.time[-1], n_knots + 2)[1:-1]
-    return lk.designmatrix.create_spline_matrix(tpf.time, degree=3, knots=list(knots)).X
+    knots = np.linspace(time[0], time[-1], n_knots + 2)[1:-1]
+    return lk.designmatrix.create_spline_matrix(time, degree=3, knots=list(knots)).X
 
 
-def pca_matrix(time, flux, faint_mask, bright_mask, n_pca_components=3, tmask=None):
+def pca_matrix(time, flux, pix_mask, n_pca_components=3, tmask=None):
     """Finds the PCA components for pixels in the TPF
 
     Set `percentile` to a value between 0 and 1. Only pixels below
@@ -140,21 +139,22 @@ def pca_matrix(time, flux, faint_mask, bright_mask, n_pca_components=3, tmask=No
 #    faint = np.nanmedian(flux, axis=0) < np.nanpercentile(np.median(flux, axis=0), faint_percentile)
 #    bright = np.nanmedian(flux, axis=0) < np.nanpercentile(np.median(flux, axis=0), bright_percentile)
 
-    U, s, V = pca(flux[:, faint_mask], k=n_pca_components, n_iter=10)
-
-    A = np.hstack([U, poly_matrix(time, 3)])
-
-    mod = np.zeros_like(flux[:, bright_mask])
-    if tmask is None:
-        tmask = np.ones(len(flux), bool)
-    Am = A[tmask]
-    sigma_w_inv = Am.T.dot(Am)
-    for idx, f in zip(range(bright_mask.sum()), flux[tmask][:, bright_mask].T):
-        B = Am.T.dot(f)
-        w = np.linalg.solve(sigma_w_inv, B)
-        mod[:, idx] = A.dot(w)
-    U2 = pca((flux[:, bright_mask] - mod), n_pca_components)[0]
-    return np.hstack([U, U2])
+    U, s, V = pca(flux[:, pix_mask], k=n_pca_components, n_iter=10)
+    return U
+    #
+    # A = np.hstack([U, poly_matrix(time, 3)])
+    #
+    # mod = np.zeros_like(flux[:, bright_mask])
+    # if tmask is None:
+    #     tmask = np.ones(len(flux), bool)
+    # Am = A[tmask]
+    # sigma_w_inv = Am.T.dot(Am)
+    # for idx, f in zip(range(bright_mask.sum()), flux[tmask][:, bright_mask].T):
+    #     B = Am.T.dot(f)
+    #     w = np.linalg.solve(sigma_w_inv, B)
+    #     mod[:, idx] = A.dot(w)
+    # U2 = pca((flux[:, bright_mask] - mod), n_pca_components)[0]
+    # return np.hstack([U, U2])
 #
 # #@lru_cache()
 # def get_straps(ar, ar_e, pix_mask):
@@ -200,10 +200,10 @@ def pca_matrix(time, flux, faint_mask, bright_mask, n_pca_components=3, tmask=No
 #
 #     return poly_mod
 
-
-def multiply_self(matrix):
-    """Take the product of a matrix with itself"""
-    return np.vstack([np.vstack([matrix[idx][None, :] * np.atleast_2d(matrix[idx + 1:]) for idx in np.arange(0, matrix.shape[0] - 1), matrix])])
+#
+# def multiply_self(matrix):
+#     """Take the product of a matrix with itself"""
+#     return np.vstack([np.vstack([matrix[idx][None, :] * np.atleast_2d(matrix[idx + 1:]) for idx in np.arange(0, matrix.shape[0] - 1), matrix])])
 
 
 def linear_solve(A, y, ye=None, tmask=None, fullmask=None, prior_mu=None, prior_sigma=None):
@@ -225,7 +225,10 @@ def linear_solve(A, y, ye=None, tmask=None, fullmask=None, prior_mu=None, prior_
         AsT = As.T
         sigma_w_inv = AsT.dot(As)
         sigma_w_inv += np.diag(1/prior_sigma**2)
-        ys = np.copy(y[tmask])
+        if tmask is None:
+            ys = np.copy(ys)
+        else:
+            ys = np.copy(y[tmask])
         for idx in range(ys.shape[1]):
             for jdx in range(ys.shape[2]):
                 B = AsT.dot(ys[:, idx, jdx])
