@@ -6,31 +6,48 @@ import pyia
 
 from functools import lru_cache
 
-def query_asteroid_dict(tpf, max_objs=None, magnitude_lower_limit=100, magnitude_upper_limit=0):
+
+def query_asteroid_dict(
+    tpf, max_objs=None, magnitude_lower_limit=100, magnitude_upper_limit=0
+):
     mask = np.in1d(np.arange(len(tpf)), np.arange(0, len(tpf) * 4, 4))
     objs = tpf.query_solar_system_objects(cadence_mask=mask)
     objs = objs.drop_duplicates("Name")
     objs = objs[(objs.Mv < magnitude_lower_limit) & (objs.Mv > magnitude_upper_limit)]
-    objs = objs.sort_values('Mv').reset_index(drop=True)
+    objs = objs.sort_values("Mv").reset_index(drop=True)
     if max_objs is not None:
         objs = objs.head(max_objs)
 
-    names = np.asarray(objs.sort_values('Mv').Name)
+    names = np.asarray(objs.sort_values("Mv").Name)
     ephs = []
     for name in tqdm(names):
         eph = tess_ephem.ephem(name, tpf.astropy_time)
-        eph = eph[(eph.sector == tpf.sector) & (eph.camera == tpf.camera) & (eph.ccd == tpf.ccd)]
+        eph = eph[
+            (eph.sector == tpf.sector)
+            & (eph.camera == tpf.camera)
+            & (eph.ccd == tpf.ccd)
+        ]
         ephs.append(eph)
 
     c = np.zeros((len(tpf), (len(ephs)))) * np.nan
     r = np.zeros((len(tpf), (len(ephs)))) * np.nan
     for jdx, eph in enumerate(ephs):
-        c[np.in1d(tpf.astropy_time.jd, np.asarray([i.jd for i in eph.index])), jdx] = np.asarray(eph.column)
-        r[np.in1d(tpf.astropy_time.jd, np.asarray([i.jd for i in eph.index])), jdx] = np.asarray(eph.row)
+        c[
+            np.in1d(tpf.astropy_time.jd, np.asarray([i.jd for i in eph.index])), jdx
+        ] = np.asarray(eph.column)
+        r[
+            np.in1d(tpf.astropy_time.jd, np.asarray([i.jd for i in eph.index])), jdx
+        ] = np.asarray(eph.row)
 
     c -= tpf.column
     r -= tpf.row
-    return {'time':tpf.astropy_time.jd, 'column':c, 'row':r, 'names':names, 'Mv':np.asarray(objs['Mv'])}
+    return {
+        "time": tpf.astropy_time.jd,
+        "column": c,
+        "row": r,
+        "names": names,
+        "Mv": np.asarray(objs["Mv"]),
+    }
 
 
 @lru_cache()

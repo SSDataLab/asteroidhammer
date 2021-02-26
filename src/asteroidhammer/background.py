@@ -16,6 +16,8 @@ from fbpca import pca
 from astropy.io import fits
 from astropy.wcs import WCS
 from astropy.time import Time
+from astropy.coordinates import SkyCoord
+from astropy.stats import sigma_clipped_stats
 
 import matplotlib.pyplot as plt
 
@@ -188,15 +190,19 @@ class BackgroundCorrector(object):
                     catalog_file=self.asteroid_catalog_file,
                 )
 
-            asteroid_mask = np.zeros_like(self.bkg_aper)
-            asteroid_mask[:2048, 45 : 2048 + 45] = sparse.load_npz(
-                f".ah_cache/sec{self.sector:04}_camera{self.camera}_ccd{self.ccd}_bright_mask.npz"
-            ).toarray()
-            self.bkg_aper &= ~asteroid_mask
+            self.bkg_aper &= ~self.asteroid_mask
 
             #            bkg_aper[self.locs[0].max() :] = False
             #            bkg_aper[:, self.locs[1].max() :] = False
             self.Xf = self._get_X(c=np.arange(2048), r=np.arange(2048))
+
+    @property
+    def asteroid_mask(self):
+        asteroid_mask = np.zeros_like(self.bkg_aper)
+        asteroid_mask[:2048, 45 : 2048 + 45] = sparse.load_npz(
+            f".ah_cache/sec{self.sector:04}_camera{self.camera}_ccd{self.ccd}_bright_mask.npz"
+        ).toarray()
+        return asteroid_mask
 
     @property
     def _cache_fnames(self):
@@ -282,54 +288,67 @@ class BackgroundCorrector(object):
         gaia_zp = 25.688365751
         return gaia_zp + -2.5 * np.log10(self.phot)
 
-    def find_bkg_solution(self, nbins=(30, 30)):
+    def find_bkg_solution(self, nbins=(20, 20)):
         # Clip out outliers present in the test frame
         f = fitsio.read(self.fnames[self.testframe], ext=1)
+        # Saturation
+        sat_mask = f[:2048, 45 : 2048 + 45] > 9e4
+        for count in range(4):
+            sat_mask |= np.gradient(sat_mask.astype(float))[0] != 0
+
         f = f[:2048, 45 : 2048 + 45].ravel()
         fe = fitsio.read(self.fnames[self.testframe], ext=2)[
             :2048, 45 : 2048 + 45
         ].ravel()
         mask = self.bkg_aper.copy()[:2048, 45 : 2048 + 45].ravel()
-        mask[f < 10] = False
-        mask &= f < np.nanpercentile(f[mask], 99.9)
-        mask &= f > np.nanpercentile(f[mask], 0.01)
+        mask &= ~sat_mask.ravel()
+        mask &= f < np.nanpercentile(f[mask], 99.99)
+        mask &= f > np.nanpercentile(f[mask], 0.001)
 
         # Prior mu is all zero...
-        prior_sigma = np.ones(self.Xf.shape[1]) * 3000
+        prior_sigma = 1 / np.zeros(self.Xf.shape[1])
+        prior_sigma[-2048:] = 500
+        #        prior_sigma = np.ones(self.Xf.shape[1]) * 3000
 
-        for perc in [99.99]:
+        for sigma in [10, 5]:
             sigma_w_inv = self.Xf.T[:, mask].dot(self.Xf[mask]).toarray() + np.diag(
                 1 / prior_sigma ** 2
             )
             B = self.Xf.T[:, mask].dot(f[mask])
             w = np.linalg.solve(sigma_w_inv, B)
             mod = self.Xf.dot(w)
-            chi = (f - mod) ** 2 / fe ** 2
-
+            res = f - mod
             # Clip out heinous outliers
-            mask &= chi < np.percentile(chi, perc)
+            # chi = (f - mod) ** 2 / fe ** 2
+            #            mask &= chi < np.percentile(chi, perc)
+            stats = sigma_clipped_stats(np.ma.masked_array(res, ~mask), sigma=sigma)
+            mask &= (res - stats[1]) / (stats[2]) < 4
 
         sigma_w_inv = self.Xf.T[:, mask].dot(self.Xf[mask]).toarray() + np.diag(
             1 / prior_sigma ** 2
         )
         XfTk = self.Xf.T[:, mask]
         B = XfTk.dot(f.ravel()[mask])
-        self.avg = (f - self.Xf.dot(np.linalg.solve(sigma_w_inv, B)))[self.bright_mask]
+
+        self.avg = f - self.Xf.dot(np.linalg.solve(sigma_w_inv, B))
+
+        self.avg_br = self.avg[self.bright_mask]
+        self.avg = self.avg.reshape((2048, 2048))
 
         self.w = np.zeros((self.nfiles, self.Xf.shape[1]))
         Xf_bright = self.Xf[self.bright_mask]
 
         self.dra_bin, self.ddec_bin, bin_masks = self._get_bin_basis(nbins=nbins)
-        self.med = np.asarray([np.nanmedian(self.avg[m1]) for m1 in bin_masks]).reshape(
-            nbins
-        )
+        self.med = np.asarray(
+            [np.nanmedian(self.avg_br[m1]) for m1 in bin_masks]
+        ).reshape(nbins)
 
         #        self.avg = np.zeros(self.bright_mask.sum())
         self.dmed = np.ones((self.nfiles, *nbins))
         for idx, fname in enumerate(
             tqdm(self.fnames, desc="Calculating Background Correction")
         ):
-            f = fitsio.read(fname, ext=1)[:2048, 45 : 2048 + 45]
+            f = fitsio.read(fname, ext=1)[:2048, 45 : 2048 + 45] - self.avg
             # fe = fitsio.read(fname, ext=2)[:self.npixels*1, 45:self.npixels*16+45]
 
             B = XfTk.dot(f.ravel()[mask])
@@ -340,11 +359,12 @@ class BackgroundCorrector(object):
 
             self.dmed[idx] = np.asarray(
                 [
-                    np.nanmedian(f_bright[m1] / self.avg[m1]) if m1.sum() != 0 else 1
+                    np.nanmedian((f_bright[m1] + self.avg_br[m1]) / self.avg_br[m1])
+                    if m1.sum() != 0
+                    else 1
                     for m1 in bin_masks
                 ]
             ).reshape(nbins)
-
             # table = pa.table({'flux': f_bright})
             # pq.write_table(table, f'.database/{idx:04}.parquet')
         #            self.avg += f_bright
@@ -534,10 +554,20 @@ class BackgroundCorrector(object):
                 ra, dec = ra.reshape((self.npixels, self.npixels)), dec.reshape(
                     (self.npixels, self.npixels)
                 )
+
+                rad = SkyCoord(
+                    ra[self.npixels // 2, self.npixels // 2],
+                    dec[self.npixels // 2, self.npixels // 2],
+                    unit="deg",
+                ).separation(SkyCoord(ra, dec, unit="deg"))
+
+                rad = rad.deg.max()
+                rad += 0.015
+
                 gd = query_gaia_sources(
-                    ra.mean(),
-                    dec.mean(),
-                    np.hypot(ra - ra.mean(), dec - dec.mean()).max(),
+                    ra[self.npixels // 2, self.npixels // 2],
+                    dec[self.npixels // 2, self.npixels // 2],
+                    rad,
                     epoch=Time.strptime(datekey, "%Y%j").jyear,
                     magnitude_limit=magnitude_limit,
                 )
@@ -664,7 +694,8 @@ def _build_asteroid_mask(
         f".ah_cache/sec{sector:04}_camera{camera}_ccd{ccd}_bright_mask.npz", bright_mask
     )
     df[["pdes"]].to_csv(
-        f".ah_cache/sec{sector:04}_camera{camera}_ccd{ccd}_asteroid_list.csv"
+        f".ah_cache/sec{sector:04}_camera{camera}_ccd{ccd}_asteroid_list.csv",
+        index=False,
     )
 
     return asteroid_mask
