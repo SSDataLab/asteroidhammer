@@ -635,7 +635,7 @@ def _build_asteroid_mask(
             col, row = ep.column, ep.row
         else:
             ep.time = Time(ep.time).value
-            k = (time >= ep.time[0]) & (time <= ep.time[len(ep) - 1])
+            k = (time >= ep.iloc[0].time) & (time <= ep.iloc[len(ep) - 1].time)
             col = interp1d(
                 ep.time,
                 ep.column,

@@ -9,3 +9,4 @@ from .main import Data
 from .matrices import *
 from .plotting import *
 from .background import *
+from .rip import *
