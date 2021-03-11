@@ -165,9 +165,10 @@ class Ripper(object):
         return bkg
 
     def _get_jitter_correction(
-        self, dat, bkg, tmask, Ts, np1=1, npca_components=5, npoly=2
+        self, dat, bkg, tmask, Ts, np1=1, npca_components=5, npoly=2, nsamp=50
     ):
 
+        dmed = self.b.dmed[:, self.b.dmed[0] != 1]
         t1 = (self.time - self.time.mean()) / (self.time.max() - self.time.min())
         poly = np.vstack([t1 ** idx for idx in range(npoly + 1)]).T
 
@@ -181,10 +182,13 @@ class Ripper(object):
             if len(t) == 0:
                 continue
             X = np.hstack(
-                [pca(dmed[t.astype(int), :], npca_components)[0], poly[t.astype(int)]]
+                [
+                    pca(dmed[t.astype(int), :], npca_components)[0],
+                    poly[t.astype(int)],
+                ]
             )
             j = tmask[np1, np1, k, tdx]
-            if j.sum() < 15:
+            if j.sum() < 6:
                 continue
 
             sigma_w_inv = X[j].T.dot(X[j])
@@ -193,12 +197,17 @@ class Ripper(object):
 
             for c1 in np.arange(-np1, np1 + 1):
                 for r1 in np.arange(-np1, np1 + 1):
-                    w = np.linalg.solve(sigma_w_inv, X[j].T.dot(res[r1, c1, k, tdx][j]))
-                    jitter_model[r1, c1, k, tdx] = X.dot(w)
+                    w = np.linalg.solve(
+                        sigma_w_inv, X[j].T.dot(res[r1 + np1, c1 + np1, k, tdx][j])
+                    )
+                    jitter_model[r1 + np1, c1 + np1, k, tdx] = X.dot(w)
                     w_samp = np.random.multivariate_normal(w, werr, size=(nsamp))
-                    jitter_err[r1, c1, k, tdx] = np.asarray(
+                    jitter_err[r1 + np1, c1 + np1, k, tdx] = np.asarray(
                         [X.dot(w_samp1) for w_samp1 in w_samp]
                     ).std(axis=0)
+        #                    import pdb
+        #                    pdb.set_trace()
+
         return jitter_model, jitter_err
 
 
@@ -252,14 +261,26 @@ class Asteroid(object):
         new_ast = self.copy()
         if not hasattr(self, "dat"):
             raise ValueError("Please populate data before doing math")
-        new_ast.dat = self.dat + other
+        if isinstance(other, tuple):
+            new_ast.dat = self.dat + other[0]
+            new_ast.err = (self.err ** 2 + other[1] ** 2) ** 0.5
+        else:
+            new_ast.dat = self.dat + other
         return new_ast
 
     def __radd__(self, other):
         return self.__add__(other)
 
     def __sub__(self, other):
-        return self.__add__(-1 * other)
+        new_ast = self.copy()
+        if not hasattr(self, "dat"):
+            raise ValueError("Please populate data before doing math")
+        if isinstance(other, tuple):
+            new_ast.dat = self.dat - other[0]
+            new_ast.err = (self.err ** 2 + other[1] ** 2) ** 0.5
+        else:
+            new_ast.dat = self.dat - other
+        return new_ast
 
     def __rsub__(self, other):
         return (-1 * self).__add__(other)
@@ -268,20 +289,42 @@ class Asteroid(object):
         new_ast = self.copy()
         if not hasattr(self, "dat"):
             raise ValueError("Please populate data before doing math")
-        new_ast.dat = self.dat * other
+        if isinstance(other, tuple):
+            new_ast.dat = self.dat * other[0]
+            new_ast.err = np.abs(new_ast.dat) * np.hypot(
+                self.err / self.dat, other[1] / other[0]
+            )
+        else:
+            new_ast.dat = self.dat * other
         return new_ast
 
     def __rmul__(self, other):
         return self.__mul__(other)
 
     def __truediv__(self, other):
-        return self.__mul__(1.0 / other)
+        new_ast = self.copy()
+        if not hasattr(self, "dat"):
+            raise ValueError("Please populate data before doing math")
+        if isinstance(other, tuple):
+            new_ast.dat = self.dat / other[0]
+            new_ast.err = np.abs(new_ast.dat) * np.hypot(
+                self.err / self.dat, other[1] / other[0]
+            )
+        else:
+            new_ast.dat = self.dat / other
+        return new_ast
 
     def __rtruediv__(self, other):
         new_ast = self.copy()
         if not hasattr(self, "dat"):
             raise ValueError("Please populate data before doing math")
-        new_ast.dat = self.dat / other
+        if isinstance(other, tuple):
+            new_ast.dat = self.dat / other[0]
+            new_ast.err = np.abs(new_ast.dat) * np.hypot(
+                self.err / self.dat, other[1] / other[0]
+            )
+        else:
+            new_ast.dat = self.dat / other
         return new_ast
 
     def __div__(self, other):
@@ -294,35 +337,76 @@ class Asteroid(object):
     def tpf(self):
         raise NotImplementedError
 
-    @property
-    def lc(self):
+    # @property
+    def to_lc(self, aperture_mask=None):
+        if aperture_mask is None:
+            aperture_mask = np.ones(self.dat.shape[1:3], bool)
+
         return lk.LightCurve(
             time=self.time,
             flux=np.nansum(
-                self.dat[1, :, :, np.diag(np.ones(self.ncadences, bool))], axis=(1, 2)
+                self.dat[1, :, :, np.diag(np.ones(self.ncadences, bool))][
+                    :, aperture_mask
+                ],
+                axis=(1),
             ),
+            flux_err=np.nansum(
+                self.err[1, :, :, np.diag(np.ones(self.ncadences, bool))][
+                    :, aperture_mask
+                ]
+                ** 2,
+                axis=(1),
+            )
+            ** 0.5,
             label=self.name,
             targetid=self.name,
         )
 
-    @property
-    def lag_lc(self):
+    # @property
+    def to_lag_lc(self, aperture_mask=None):
+        if aperture_mask is None:
+            aperture_mask = np.ones(self.dat.shape[1:3], bool)
+
         return lk.LightCurve(
             time=self.time - self.lag_time,
             flux=np.nansum(
-                self.dat[0, :, :, np.diag(np.ones(self.ncadences, bool))], axis=(1, 2)
+                self.dat[0, :, :, np.diag(np.ones(self.ncadences, bool))][
+                    :, aperture_mask
+                ],
+                axis=(1),
             ),
+            flux_err=np.nansum(
+                self.err[0, :, :, np.diag(np.ones(self.ncadences, bool))][
+                    :, aperture_mask
+                ]
+                ** 2,
+                axis=(1),
+            )
+            ** 0.5,
             label=self.name + " [lagged]",
             targetid=self.name,
         )
 
-    @property
-    def lead_lc(self):
+    # @property
+    def to_lead_lc(self, aperture_mask=None):
+        if aperture_mask is None:
+            aperture_mask = np.ones(self.dat.shape[1:3], bool)
         return lk.LightCurve(
             time=self.time + self.lag_time,
             flux=np.nansum(
-                self.dat[2, :, :, np.diag(np.ones(self.ncadences, bool))], axis=(1, 2)
+                self.dat[2, :, :, np.diag(np.ones(self.ncadences, bool))][
+                    :, aperture_mask
+                ],
+                axis=(1),
             ),
+            flux_err=np.nansum(
+                self.err[2, :, :, np.diag(np.ones(self.ncadences, bool))][
+                    :, aperture_mask
+                ]
+                ** 2,
+                axis=(1),
+            )
+            ** 0.5,
             label=self.name + " [leading]",
             targetid=self.name,
         )
@@ -335,7 +419,13 @@ class Asteroid(object):
         self, times, fnames, aperture_radius=1, cadence_padding=30, clip_corners=False
     ):
         l = np.where(times == self.time[0].value)[0][0]
-        self.dat, self.cols, self.rows, self.Ts = self._get_asteroid_from_local_files(
+        (
+            self.dat,
+            self.err,
+            self.cols,
+            self.rows,
+            self.Ts,
+        ) = self._get_asteroid_from_local_files(
             fnames,
             l,
             np1=aperture_radius,
@@ -367,6 +457,10 @@ class Asteroid(object):
         """
 
         dat = (
+            np.zeros((3, np1 * 2 + 1, np1 * 2 + 1, self.ncadences, self.ncadences))
+            * np.nan
+        )
+        err = (
             np.zeros((3, np1 * 2 + 1, np1 * 2 + 1, self.ncadences, self.ncadences))
             * np.nan
         )
@@ -412,9 +506,12 @@ class Asteroid(object):
                                 dat[ldx, r1 + np1, c1 + np1, tdx, tmask[idx]] = fts[1][
                                     r[idx] : r[idx] + 1, c[idx] : c[idx] + 1
                                 ]
+                                err[ldx, r1 + np1, c1 + np1, tdx, tmask[idx]] = fts[2][
+                                    r[idx] : r[idx] + 1, c[idx] : c[idx] + 1
+                                ]
                                 Ts[ldx, r1 + np1, c1 + np1, tdx, tmask[idx]] = tdx + l
                             ldx += 1
-        return dat, cols, rows, Ts
+        return dat, err, cols, rows, Ts
 
     def _get_asteroid_from_s3(self):
         """Get the data from s3"""
